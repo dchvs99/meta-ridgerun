@@ -1,0 +1,112 @@
+name: Meta RidgeRun Build
+
+on:
+  schedule:
+    # Runs every Monday at 5:00 AM
+    - cron: '0 5 * * 1'
+  push:
+    branches: [ "scarthgap" ]
+  workflow_dispatch:
+
+env:
+  USER: "ridgerun"
+  UID: "1000"
+  GID: "1000"
+  YOCTO_RELEASE: "scarthgap"
+  WORKSPACE: "/workdir/builder_client"
+  BUILD_DIR: "/workdir/builder_client/build"
+  META_LAYER_DIR: "/workdir/builder_client/layers/meta-ridgerun"
+
+  BITBAKE_TARGET: "gst-perf"
+  MACHINE: "jetson-agx-orin-devkit"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: dchvs/yocto:scarthgap
+    timeout-minutes: 60
+    concurrency:
+      group: yocto-build
+      cancel-in-progress: false
+    steps:
+      - name: Start ssh-agent with GitLab deploy key
+        # v0.10.0 — loads the key into an in-memory ssh-agent (no key file on
+        # disk) and exports SSH_AUTH_SOCK to later steps
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555
+        with:
+          ssh-private-key: ${{ secrets.GITLAB_SSH_KEY }}
+
+      - name: Install GitLab host key
+        shell: bash
+        env:
+          GITLAB_KNOWN_HOSTS: ${{ secrets.GITLAB_KNOWN_HOSTS }}
+        run: |
+          # webfactory/ssh-agent does not manage known_hosts, so pin GitLab's host key
+          printf '%s\n' "$GITLAB_KNOWN_HOSTS" >> /etc/ssh/ssh_known_hosts
+
+      - name: Build
+        shell: bash
+        env:
+          BUILDER_REPO: ${{ secrets.BUILDER_REPO }}
+          BUILDER_RELEASE: v1.0.0
+          BUILDER_CLIENT_REPO: ${{ secrets.BUILDER_CLIENT_REPO }}
+          BUILDER_CLIENT_RELEASE: v1.0.1
+          SSTATE_MIRRORS_URL_BASE: ${{ secrets.SSTATE_MIRRORS_URL_BASE }}
+          SOURCE_LOCK_URL: ${{ secrets.SSTATE_MIRRORS_URL_BASE }}/${{ env.YOCTO_RELEASE }}/source-locks/sources-fixed-revisions_${{ env.YOCTO_RELEASE }}_latest.json
+        run: |
+          # GitHub bypasses the image ENTRYPOINT, so run its commands here.
+          getent group ${{ env.GID }} >/dev/null || groupadd --gid ${{ env.GID }} ${{ env.USER }}
+          getent passwd ${{ env.UID }} >/dev/null || useradd -p "" -l --uid ${{ env.UID }} --gid ${{ env.GID }} ${{ env.USER }} --shell /bin/bash
+
+          rm -rf $WORKSPACE
+          mkdir -p $WORKSPACE
+
+          git clone "$BUILDER_CLIENT_REPO" -b "$BUILDER_CLIENT_RELEASE" "$WORKSPACE"
+          git clone "$BUILDER_REPO" -b "$BUILDER_RELEASE" "$WORKSPACE/builder"
+
+          chown -R ${{ env.UID }}:${{ env.GID }} /workdir
+
+          gosu ${{ env.UID }}:${{ env.GID }} bash <<'EOF'
+          set -eo pipefail
+
+          cd $WORKSPACE
+          $WORKSPACE/builder/.gitlab-ci/check_sstate_server.sh
+          $WORKSPACE/builder/.gitlab-ci/verify_workspace_ownership.sh
+
+          bitbake-setup -q \
+            --setting default top-dir-prefix /workdir \
+            --setting default top-dir-name builder_client \
+            init \
+            --non-interactive \
+            --no-init-vscode \
+            --setup-dir-name $WORKSPACE \
+            --source-overrides <(curl -fsS $SOURCE_LOCK_URL) \
+            --update-bb-conf=no \
+            $WORKSPACE/builder/bitbake/config/${YOCTO_RELEASE}.conf.json default
+
+          . $BUILD_DIR/init-build-env $BUILD_DIR
+
+          git clone https://github.com/${GITHUB_REPOSITORY} -b "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" "$META_LAYER_DIR"
+          bitbake-layers add-layer $META_LAYER_DIR
+
+          echo "Build Configuration:"
+          bitbake $BITBAKE_TARGET -e | \
+            egrep '^(BB_VERSION|BUILD_SYS|NATIVELSBSTRING|TARGET_SYS|MACHINE|DISTRO|DISTRO_VERSION|TUNE_FEATURES|TARGET_FPU)=\"'
+          bitbake $BITBAKE_TARGET -e | egrep '^(RR_USE_SSTATE_MIRROR|DISTRO_FEATURES)=\"'
+
+          bitbake-layers show-layers
+
+          bitbake $BITBAKE_TARGET -q
+
+          grep -m1 "Sstate summary:" $BUILD_DIR/tmp*/log/cooker/*/console-latest.log || true
+
+          echo "Build succeeded"
+          EOF
+
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          if [ -n "$WORKSPACE" ]; then
+            rm -rf $WORKSPACE/
+          fi
