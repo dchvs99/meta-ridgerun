@@ -1,0 +1,16 @@
+pyshtables.py
+__pycache__/
+.bitbake-setup-*/
+builder/
+config/
+layers/
+site.conf
+
+sstate-cache/
+.sstate-cache/
+bitbake-cookerdaemon.log
+build/cache/
+build/downloads/
+build/tmp*/
+build/conf-upstream.*/
+build/init-build-env

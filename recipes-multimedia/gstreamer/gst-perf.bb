@@ -28,3 +28,7 @@ do_configure() {
 ${S}/autogen.sh
 oe_runconf
 }
+
+do_install:append() {
+	rm -f ${D}${libdir}/gstreamer-1.0/libgstperf.a
+}

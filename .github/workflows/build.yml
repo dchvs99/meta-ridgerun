@@ -1,0 +1,101 @@
+name: Meta Ridgerun Build
+
+on:
+  schedule:
+    # Runs every Monday at 5:00 AM
+    - cron: '0 5 * * 1'
+  pull_request:
+    branches: [ "scarthgap" ]
+  push:
+    branches: [ "scarthgap" ]
+  workflow_dispatch:
+
+env:
+  USER: "ridgerun"
+  UID: "1000"
+  GID: "1000"
+  YOCTO_RELEASE: "scarthgap"
+  WORKSPACE: "/workdir/meta-ridgerun"
+  BUILD_DIR: "/workdir/meta-ridgerun/build"
+
+  BITBAKE_TARGET: "gst-perf"
+  MACHINE: "jetson-agx-orin-devkit"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container:
+      image: dchvs/yocto:scarthgap
+      options: --privileged
+    timeout-minutes: 60
+    concurrency:
+      group: yocto-build
+      cancel-in-progress: false
+    steps:
+      - name: Build
+        shell: bash
+        env:
+          BUILDER_DEPLOY_USER: ${{ secrets.BUILDER_DEPLOY_USER }}
+          BUILDER_DEPLOY_TOKEN: ${{ secrets.BUILDER_DEPLOY_TOKEN }}
+          BUILDER_REPO: ${{ secrets.BUILDER_REPO }}
+          SSTATE_MIRRORS_URL_BASE: ${{ secrets.SSTATE_MIRRORS_URL_BASE }}
+        run: |
+          # GitHub bypasses the image ENTRYPOINT, so run its commands here.
+          # ${{ env.UID }} is used instead of $UID because bash's $UID is a
+          # readonly builtin equal to the container's real uid.
+          getent group ${{ env.GID }} >/dev/null || groupadd --gid ${{ env.GID }} ${{ env.USER }}
+          getent passwd ${{ env.UID }} >/dev/null || useradd -p "" -l --uid ${{ env.UID }} --gid ${{ env.GID }} ${{ env.USER }} --shell /bin/bash
+          usermod -a -G sudo ${{ env.USER }}
+          chown ${{ env.UID }}:${{ env.GID }} /workdir
+
+          gosu ${{ env.UID }}:${{ env.GID }} bash <<'EOF'
+          set -e
+
+          SOURCE_LOCK_URL="${SSTATE_MIRRORS_URL_BASE}/${YOCTO_RELEASE}/source-locks/sources-fixed-revisions_${YOCTO_RELEASE}_latest.json"
+
+          rm -rf $WORKSPACE
+          mkdir -p $WORKSPACE
+
+          git clone https://github.com/${GITHUB_REPOSITORY} -b "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" $WORKSPACE
+          cd $WORKSPACE
+
+          git clone https://${BUILDER_DEPLOY_USER}:${BUILDER_DEPLOY_TOKEN}@${BUILDER_REPO} -b $YOCTO_RELEASE $WORKSPACE/builder
+
+          $WORKSPACE/builder/.gitlab-ci/check_sstate_server.sh
+          $WORKSPACE/builder/.gitlab-ci/verify_workspace_ownership.sh
+
+          bitbake-setup -q \
+            --setting default top-dir-prefix /workdir \
+            --setting default top-dir-name meta-ridgerun \
+            init \
+            --non-interactive \
+            --no-init-vscode \
+            --setup-dir-name $WORKSPACE \
+            --source-overrides <(curl -fsS $SOURCE_LOCK_URL) \
+            --update-bb-conf=no \
+            $WORKSPACE/builder/bitbake/config/${YOCTO_RELEASE}.conf.json default
+
+          . $BUILD_DIR/init-build-env $BUILD_DIR
+
+          bitbake-layers add-layer $WORKSPACE
+
+          echo "Build Configuration:"
+          bitbake $BITBAKE_TARGET -e | \
+            egrep '^(BB_VERSION|BUILD_SYS|NATIVELSBSTRING|TARGET_SYS|MACHINE|DISTRO|DISTRO_VERSION|TUNE_FEATURES|TARGET_FPU)=\"'
+          bitbake $BITBAKE_TARGET -e | egrep '^(RR_USE_SSTATE_MIRROR|DISTRO_FEATURES)=\"'
+
+          bitbake-layers show-layers
+
+          bitbake $BITBAKE_TARGET -q
+
+          grep -m1 "Sstate summary:" $BUILD_DIR/tmp*/log/cooker/*/console-latest.log || true
+
+          echo "Build succeeded"
+          EOF
+
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          if [ -n "$WORKSPACE" ]; then
+            rm -rf $WORKSPACE/
+          fi

@@ -1,0 +1,10 @@
+
+###################################################
+###  meta-ridgerun — Yocto build environment     ##
+###################################################
+
+You can now run 'MACHINE=<target machine> bitbake <build target>'
+
+Some available build targets are:
+    gst-perf
+    packagegroup-meta-ridgerun
