@@ -1,0 +1,99 @@
+name: build
+
+on:
+  push:
+  schedule:
+    - cron: "0 9 * * 0"  # Every Sunday at 3 AM (UTC-6)
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: "MACHINE value passed to BitBake"
+        type: string
+        default: jetson-agx-orin-devkit
+  repository_dispatch:
+    types: [sstate-cache-refreshed]
+
+jobs:
+  build:
+    runs-on: [self-hosted, yocto-sstate-cache]
+    concurrency:
+      group: yocto-build
+      cancel-in-progress: false
+    container:
+      image: dchvs/yocto:scarthgap
+      volumes:
+        - /mnt/fat/var/yocto/mirror:/mirror:ro
+        - /workdir:/workdir
+    timeout-minutes: 120
+    env:
+      YOCTO_RELEASE: scarthgap
+      PROJECT_NAME: meta-ridgerun
+      WORKSPACE: /workdir/${{ github.event.repository.name }}
+      MACHINE: ${{ inputs.machine || 'jetson-agx-orin-devkit' }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+      SSTATE_MIRRORS_URL_BASE: ${{ secrets.SSTATE_MIRRORS_URL_BASE }}
+      SOURCE_LOCK_FILE: ${{ secrets.SOURCE_LOCK_FILE }}
+      BUILDER_REPO: ${{ secrets.BUILDER_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive paths
+        id: paths
+        run: |
+          SETUP_DIR_NAME="${PROJECT_NAME}-${YOCTO_RELEASE}"
+          SETUP_DIR="${WORKSPACE}/yocto/${SETUP_DIR_NAME}"
+          BUILD_DIR="${SETUP_DIR}/build"
+          echo "SETUP_DIR_NAME=$SETUP_DIR_NAME" >> "$GITHUB_ENV"
+          echo "SETUP_DIR=$SETUP_DIR" >> "$GITHUB_ENV"
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+
+      - name: Clone builder
+        run: |
+          mkdir -p $WORKSPACE
+          cd $WORKSPACE
+          git clone https://${DEPLOY_USER}:${DEPLOY_TOKEN}@${BUILDER_REPO} -b $YOCTO_RELEASE builder
+
+      - name: Check sstate server
+        run: $WORKSPACE/builder/.gitlab-ci/check_sstate_server.sh
+
+      - name: Run bitbake-setup
+        run: >-
+          bitbake-setup
+          --setting default top-dir-prefix $WORKSPACE
+          --setting default top-dir-name yocto
+          init
+          --non-interactive
+          --no-init-vscode
+          --setup-dir-name $SETUP_DIR_NAME
+          --source-overrides $SOURCE_LOCK_FILE
+          $WORKSPACE/builder/bitbake/config/${YOCTO_RELEASE}.conf.json default
+
+      - name: Configure and build
+        run: |
+          cp ${{ github.workspace }}/build/conf/auto.conf $BUILD_DIR/conf/auto.conf
+          set +u
+          . $BUILD_DIR/init-build-env
+          set -u
+          bitbake-layers add-layer ${{ github.workspace }}
+          set -o pipefail
+          MACHINE=$MACHINE bitbake packagegroup-meta-ridgerun-all 2>&1 | tee $BUILD_DIR/bitbake.log
+          grep -m1 "Sstate summary:" $BUILD_DIR/bitbake.log || true
+
+      - name: Upload build log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitbake-log
+          path: ${{ env.BUILD_DIR }}/bitbake.log
+          if-no-files-found: warn
+
+  cleanup:
+    needs: build
+    if: ${{ always() }}
+    runs-on: [self-hosted, yocto-sstate-cache]
+    env:
+      WORKSPACE: /workdir/${{ github.event.repository.name }}
+    steps:
+      - name: Remove workspace
+        run: rm -rf "$WORKSPACE"/

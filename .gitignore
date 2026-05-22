@@ -1,0 +1,24 @@
+# Yocto build artifacts (created at runtime by oe-init-build-env)
+build/build/
+build/builder/
+build/layers/
+build/yocto/
+build/bootstrap.env
+build/sources-fixed-revisions_*.json
+
+# Container helper files (created by yocto-bootstrap.sh)
+build/.container-passwd
+build/.container-group
+build/.bash_history
+build/.wget-hsts
+build/.local/
+
+# Secrets fetched from private repo
+build/.secrets/
+
+# Bootstrap state
+bootstrap.failure
+
+# Python cache
+__pycache__/
+*.pyc
