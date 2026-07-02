@@ -23,7 +23,7 @@ env:
   # discovers them dynamically and excludes anything gated behind a RidgeRun
   # proprietary order (rr_proprietary / LICENSE=Proprietary / private orders
   # SRC_URI), which would be skipped without RR_CUSTOMER_GITLAB_ORDER_DIR set.
-  BITBAKE_TARGET: "packagegroup-meta-ridgerun-nonproprietary"
+  BITBAKE_TARGET: "packagegroup-meta-ridgerun"
   MACHINE: "jetson-agx-orin-devkit"
 
 jobs:
