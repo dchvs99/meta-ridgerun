@@ -4,6 +4,8 @@ on:
   schedule:
     # Runs every Monday at 5:00 AM
     - cron: '0 5 * * 1'
+  pull_request:
+    branches: [ "scarthgap" ]
   push:
     branches: [ "scarthgap" ]
   workflow_dispatch:
@@ -17,7 +19,11 @@ env:
   BUILD_DIR: "/workdir/builder_client/build"
   META_LAYER_DIR: "/workdir/builder_client/layers/meta-ridgerun"
 
-  BITBAKE_TARGET: "gst-perf"
+  # Builds every non-proprietary meta-ridgerun recipe. This packagegroup
+  # discovers them dynamically and excludes anything gated behind a RidgeRun
+  # proprietary order (rr_proprietary / LICENSE=Proprietary / private orders
+  # SRC_URI), which would be skipped without RR_CUSTOMER_GITLAB_ORDER_DIR set.
+  BITBAKE_TARGET: "packagegroup-meta-ridgerun-nonproprietary"
   MACHINE: "jetson-agx-orin-devkit"
 
 jobs:
@@ -25,7 +31,7 @@ jobs:
     runs-on: ubuntu-22.04
     container:
       image: dchvs/yocto:scarthgap
-    timeout-minutes: 60
+    timeout-minutes: 80
     concurrency:
       group: yocto-build
       cancel-in-progress: false
