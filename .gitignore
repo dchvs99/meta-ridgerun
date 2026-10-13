@@ -6,7 +6,7 @@ build/yocto/
 build/bootstrap.env
 build/sources-fixed-revisions_*.json
 
-# Container helper files (created by yocto-bootstrap.sh)
+# Container helper files
 build/.container-passwd
 build/.container-group
 build/.bash_history
